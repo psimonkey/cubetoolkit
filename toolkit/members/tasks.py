@@ -17,7 +17,8 @@ def string_is_ascii(string):
     return all(ord(char) < 0x7F for char in string)
 
 
-def _send_email(smtp_conn, destination, subject, body, mail_is_ascii):
+def _send_email(smtp_conn, destination, subject, body, mail_is_ascii,
+        unsubscribe_header = None):
     error = None
 
     # Body, encoded in either ASCII or UTF-8:
@@ -32,6 +33,8 @@ def _send_email(smtp_conn, destination, subject, body, mail_is_ascii):
     # ('To' can contain non-ascii in name part, i.e. "name <address>")
     msg['To'] = Header(destination, "iso-8859-1")
     msg['Subject'] = Header(subject, "iso-8859-1")
+    if unsubscribe_header:
+        msg['List-Unsubscribe'] = unsubscribe_header
 
     try:
         # Enforce ascii destination email address:
@@ -77,6 +80,8 @@ def send_mailout(subject, body):
         u"To edit details of your membership, please use this link:\n" +
         u"http://{0}{{1}}?k={{2}}\n"
     ).format(settings.EMAIL_UNSUBSCRIBE_HOST)
+    unsubscribe_template = "<http://{0}{{0}}?k={{1}}>".format(
+        settings.EMAIL_UNSUBSCRIBE_HOST)
 
     recipients = Member.objects.mailout_recipients()
     count = recipients.count()
@@ -121,11 +126,18 @@ def send_mailout(subject, body):
                 reverse("edit-member", args=(recipient.pk,)),
                 recipient.mailout_key,
             )
+            # Similar, for the List-Unsubscribe header:
+            unsubscribe_header = unsubscribe_template.format(
+                reverse("unsubscribe-member", args=(recipient.pk,)),
+                recipient.mailout_key,
+            )
             # Build final email, still in unicode:
             mail_body = header + body + signature
             mail_is_ascii = body_is_ascii and string_is_ascii(header)
 
-            error = _send_email(smtp_conn, recipient.email, subject, mail_body, mail_is_ascii)
+            error = _send_email(
+                smtp_conn, recipient.email, subject, mail_body, mail_is_ascii,
+                unsubscribe_header)
 
             if error:
                 err_list.append(error)

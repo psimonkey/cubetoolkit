@@ -1,3 +1,4 @@
+import re
 import shutil
 import urllib
 import os.path
@@ -1521,7 +1522,9 @@ class TestMemberMailoutTask(MembersTestsMixin, TestCase):
         super(TestMemberMailoutTask, self).setUp()
         self.assertTrue(self.client.login(username="admin", password="T3stPassword!"))
 
-    def _assert_mail_as_expected(self, msgstr, is_utf8, from_addr, dest_addr, body_contains, expected_subject):
+    def _assert_mail_as_expected(self, msgstr, body_contains, expected_subject,
+            is_utf8=None, from_addr=None, dest_addr=None,
+            expect_list_unsubscribe=False):
         message = email.parser.Parser().parsestr(msgstr)
 
         self.assertEqual(message.get_content_type(), 'text/plain')
@@ -1529,14 +1532,23 @@ class TestMemberMailoutTask(MembersTestsMixin, TestCase):
         if is_utf8:
             self.assertEqual(message.get_charsets(), ["utf-8"])
             self.assertEqual(message['Content-Transfer-Encoding'], '8bit')
-        else:
+        elif is_utf8 is False:
             self.assertEqual(message.get_charsets(), ["us-ascii"])
             self.assertEqual(message['Content-Transfer-Encoding'], '7bit')
+        elif is_utf8 is None:
+            pass
         self.assertEqual(message['From'], from_addr)
-        self.assertEqual(message['To'], dest_addr)
+        if dest_addr is not None:
+            self.assertEqual(message['To'], dest_addr)
 
         body = message.get_payload().decode("utf-8")
         subject = email.header.decode_header(message['Subject'])
+
+        if expect_list_unsubscribe:
+            self.assertRegexpMatches(
+                message['List-Unsubscribe'],
+                r"^<http://localhost:8000/members/\d/unsubscribe/\?k=.{32}>$"
+                )
 
         self.assertIn(body_contains, body)
         subject = subject[0][0].decode(subject[0][1]) if subject[0][1] else subject[0][0]
@@ -1560,17 +1572,26 @@ class TestMemberMailoutTask(MembersTestsMixin, TestCase):
         conn = smtplib_mock.return_value
         self.assertEqual(conn.sendmail.call_count, 7)
 
+        for sendmail_call in conn.sendmail.call_args_list[:6]:
+            self._assert_mail_as_expected(
+                msgstr=sendmail_call[0][2],
+                from_addr=settings.MAILOUT_FROM_ADDRESS,
+                body_contains=u"The Body!",
+                expected_subject=subject,
+                expect_list_unsubscribe=True,
+            )
+
         # Validate summary:
         summary_mail_call = conn.sendmail.call_args_list[6]
         self.assertEqual(summary_mail_call[0][0], settings.MAILOUT_FROM_ADDRESS)
         self.assertEqual(summary_mail_call[0][1], [settings.MAILOUT_DELIVERY_REPORT_TO])
         self._assert_mail_as_expected(
-            summary_mail_call[0][2],
-            is_utf8,
-            settings.MAILOUT_FROM_ADDRESS,
-            settings.MAILOUT_DELIVERY_REPORT_TO,
-            u"6 copies of the following were sent out on cube members list",
-            subject
+            msgstr=summary_mail_call[0][2],
+            is_utf8=is_utf8,
+            from_addr=settings.MAILOUT_FROM_ADDRESS,
+            dest_addr=settings.MAILOUT_DELIVERY_REPORT_TO,
+            body_contains=u"6 copies of the following were sent out on cube members list",
+            expected_subject=subject
         )
 
         # Reported success:
@@ -1603,6 +1624,15 @@ class TestMemberMailoutTask(MembersTestsMixin, TestCase):
     @override_settings(EMAIL_HOST="smtp.test", EMAIL_PORT=8281)
     def test_send_iso88591_subj(self, current_task_mock, smtplib_mock):
         subject = u"The \xa31 Subject!"
+        body = u"The Body!\nThat will be $1, please\nTa!"
+        result = toolkit.members.tasks.send_mailout(subject, body)
+        self._assert_mail_sent(result, current_task_mock, smtplib_mock, subject, body, False)
+
+    @patch("smtplib.SMTP")
+    @patch("toolkit.members.tasks.current_task")
+    @override_settings(EMAIL_HOST="smtp.test", EMAIL_PORT=8281)
+    def test_send_list_unsubscribe(self, current_task_mock, smtplib_mock):
+        subject = u"The Subject!"
         body = u"The Body!\nThat will be $1, please\nTa!"
         result = toolkit.members.tasks.send_mailout(subject, body)
         self._assert_mail_sent(result, current_task_mock, smtplib_mock, subject, body, False)
